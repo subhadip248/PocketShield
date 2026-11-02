@@ -62,7 +62,37 @@ def main() -> int:
         if result.average_precision is not None
         else "  Average Precision: unavailable (one validation class)"
     )
-    print("No anomaly threshold was selected. The official testing CSV was not used.")
+    print(
+        "Validation threshold candidates (score >= threshold predicts Attack; "
+        f"showing top 10 of {len(result.threshold_candidates)} by selection criterion):"
+    )
+    print("  threshold       TP       TN       FP       FN  Precision  Recall  F1-score      FPR")
+    ranked_candidates = sorted(
+        result.threshold_candidates,
+        key=lambda item: (
+            item.f1_score, item.precision, -item.false_positive_rate, item.threshold
+        ),
+        reverse=True,
+    )
+    displayed = ranked_candidates[:10]
+    selected = result.selected_threshold
+    if selected is not None and selected not in displayed:
+        displayed.append(selected)
+    for candidate in displayed:
+        print(
+            f"  {candidate.threshold:9.6f} {candidate.tp:8,} {candidate.tn:8,}"
+            f" {candidate.fp:8,} {candidate.fn:8,} {candidate.precision:10.4f}"
+            f" {candidate.recall:7.4f} {candidate.f1_score:9.4f}"
+            f" {candidate.false_positive_rate:9.4f}"
+        )
+    print("Selected validation threshold:")
+    if selected is None:
+        print("  unavailable")
+    else:
+        print(f"  {selected.threshold:.12g}")
+        print("  Criterion: highest F1, then higher Precision, lower FPR, then higher threshold")
+        print("  Selection metrics are measured on the validation fold used for tuning.")
+    print("  The official testing CSV was not used.")
     return 0
 
 

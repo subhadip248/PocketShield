@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import math
 
@@ -37,6 +37,21 @@ class SplitSummary:
 
 
 @dataclass
+class ThresholdMetrics:
+    """Confusion counts and threshold-dependent validation metrics."""
+
+    threshold: float
+    tp: int
+    tn: int
+    fp: int
+    fn: int
+    precision: float
+    recall: float
+    f1_score: float
+    false_positive_rate: float
+
+
+@dataclass
 class NetworkEvaluationResult:
     """Results of one group-aware training/validation evaluation."""
 
@@ -46,6 +61,72 @@ class NetworkEvaluationResult:
     average_precision: float | None
     validation_scores: list[float]
     detector: NetworkAnomalyDetector
+    validation_labels: list[int] = field(default_factory=list)
+    threshold_candidates: list[ThresholdMetrics] = field(default_factory=list)
+    selected_threshold: ThresholdMetrics | None = None
+
+
+def evaluate_thresholds(
+    labels: Iterable[object], scores: Iterable[float], thresholds: Iterable[float]
+) -> list[ThresholdMetrics]:
+    """Evaluate candidate thresholds; score >= threshold predicts Attack."""
+    materialized_labels = [_parse_label(label) for label in labels]
+    materialized_scores = [_finite_float(score, "score") for score in scores]
+    materialized_thresholds = sorted(
+        {_finite_float(threshold, "threshold") for threshold in thresholds}
+    )
+    if not materialized_labels or not materialized_thresholds:
+        raise ValueError("labels/scores and thresholds must be non-empty")
+    if len(materialized_labels) != len(materialized_scores):
+        raise ValueError("labels and scores must have the same length")
+    results = []
+    for threshold in materialized_thresholds:
+        tp = tn = fp = fn = 0
+        for label, score in zip(materialized_labels, materialized_scores):
+            predicted = score >= threshold
+            if label == 1 and predicted:
+                tp += 1
+            elif label == 0 and not predicted:
+                tn += 1
+            elif label == 0:
+                fp += 1
+            else:
+                fn += 1
+        precision = _ratio(tp, tp + fp)
+        recall = _ratio(tp, tp + fn)
+        results.append(ThresholdMetrics(
+            threshold=threshold, tp=tp, tn=tn, fp=fp, fn=fn,
+            precision=precision, recall=recall,
+            f1_score=_ratio(2 * precision * recall, precision + recall),
+            false_positive_rate=_ratio(fp, fp + tn),
+        ))
+    return results
+
+
+def select_threshold(metrics: Iterable[ThresholdMetrics]) -> ThresholdMetrics:
+    """Choose by F1, Precision, lower FPR, then higher threshold."""
+    candidates = list(metrics)
+    if not candidates:
+        raise ValueError("At least one threshold result is required")
+    return max(candidates, key=lambda item: (
+        item.f1_score, item.precision, -item.false_positive_rate, item.threshold
+    ))
+
+
+def _finite_float(value: object, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid {name} {value!r}; expected a finite number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid {name} {value!r}; expected a finite number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"Invalid {name} {value!r}; expected a finite number")
+    return number
+
+
+def _ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator if denominator else 0.0
 
 
 def canonical_feature_key(row: Mapping[str, object]) -> tuple[object, ...]:
@@ -183,11 +264,13 @@ def evaluate_training_rows(
     random_state: int = 42,
     detector: NetworkAnomalyDetector | None = None,
 ) -> NetworkEvaluationResult:
-    """Fit on a split of training CSV rows and evaluate threshold-free metrics.
+    """Fit on a training-row split and evaluate validation scores and thresholds.
 
     Both labels are passed to ``detector.fit``; its existing implementation
     retains only normal rows internally. The validation set is scored with
-    both classes. No decision threshold or predictions are produced.
+    both classes. Threshold candidates are derived only from validation scores,
+    evaluated against validation labels, and one is selected by F1, Precision,
+    false-positive rate, then threshold.
     """
     materialized = list(rows)
     training_rows, validation_rows = split_training_rows(
@@ -199,6 +282,10 @@ def evaluate_training_rows(
     model.fit(training_rows)
     scores = model.anomaly_scores(validation_rows)
     labels = [_parse_label(row[LABEL_COLUMN]) for row in validation_rows]
+    thresholds = sorted(set(scores))
+    thresholds.append(math.nextafter(max(scores), math.inf))
+    threshold_candidates = evaluate_thresholds(labels, scores, thresholds)
+    selected_threshold = select_threshold(threshold_candidates)
 
     roc_auc: float | None = None
     average_precision: float | None = None
@@ -213,6 +300,9 @@ def evaluate_training_rows(
         average_precision=average_precision,
         validation_scores=scores,
         detector=model,
+        validation_labels=labels,
+        threshold_candidates=threshold_candidates,
+        selected_threshold=selected_threshold,
     )
 
 

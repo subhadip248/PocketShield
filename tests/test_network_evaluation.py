@@ -3,6 +3,9 @@
 from pocketshield.network.evaluation import (
     canonical_feature_key,
     evaluate_training_rows,
+    evaluate_thresholds,
+    select_threshold,
+    ThresholdMetrics,
     split_training_rows,
     summarize_split,
 )
@@ -96,4 +99,64 @@ def test_evaluation_fits_complete_fold_and_scores_both_validation_classes():
     assert result.validation_summary.attack_records > 0
     assert result.roc_auc is not None
     assert result.average_precision is not None
+    expected_validation = split_training_rows(synthetic_training_rows(), random_state=7)[1]
+    assert result.validation_labels == [int(row["label"]) for row in expected_validation]
+    assert len(result.threshold_candidates) == len(set(result.validation_scores)) + 1
+    assert result.selected_threshold in result.threshold_candidates
+
+
+def test_threshold_metrics_counts_and_metrics_and_inclusive_boundary():
+    result = evaluate_thresholds([1, 0, 1, 0], [0.8, 0.8, 0.2, 0.1], [0.8])[0]
+    assert (result.tp, result.tn, result.fp, result.fn) == (1, 1, 1, 1)
+    assert result.precision == result.recall == result.f1_score == 0.5
+    assert result.false_positive_rate == 0.5
+
+
+def test_threshold_metrics_zero_denominators_and_candidate_order_deduplication():
+    results = evaluate_thresholds([0, 0], [1, 2], [2, 0, 2])
+    assert [result.threshold for result in results] == [0.0, 2.0]
+    assert (results[0].tp, results[0].tn, results[0].fp, results[0].fn) == (0, 0, 2, 0)
+    assert results[0].precision == results[0].recall == results[0].f1_score == 0
+    assert results[0].false_positive_rate == 1
+    all_normal = evaluate_thresholds([1, 1], [1, 2], [3])[0]
+    assert (all_normal.tp, all_normal.tn, all_normal.fp, all_normal.fn) == (0, 0, 0, 2)
+    assert all_normal.precision == all_normal.recall == all_normal.f1_score == 0
+    assert all_normal.false_positive_rate == 0
+
+
+def test_threshold_selection_uses_documented_tie_break_order():
+    def metric(threshold, *, f1, precision, fpr):
+        return ThresholdMetrics(threshold, 0, 0, 0, 0, precision, 0, f1, fpr)
+
+    candidates = [
+        metric(0.2, f1=0.8, precision=0.75, fpr=0.1),
+        metric(0.3, f1=0.8, precision=0.8, fpr=0.2),
+        metric(0.4, f1=0.8, precision=0.8, fpr=0.1),
+        metric(0.5, f1=0.8, precision=0.8, fpr=0.1),
+        metric(0.9, f1=0.7, precision=1.0, fpr=0.0),
+    ]
+    assert select_threshold(candidates) == candidates[3]
+    assert select_threshold(evaluate_thresholds([0, 0], [1, 2], [0.5, 1.5])).threshold == 1.5
+
+
+def test_threshold_helpers_reject_invalid_inputs():
+    import math
+    import pytest
+
+    for labels, scores, thresholds in [([], [], [0]), ([0], [], [0]), ([2], [0], [0]),
+                                        ([0], [math.inf], [0]), ([0], [0], [math.nan]),
+                                        ([0], [0], [])]:
+        with pytest.raises(ValueError):
+            evaluate_thresholds(labels, scores, thresholds)
+    with pytest.raises(ValueError, match="At least one"):
+        select_threshold([])
+
+
+def test_threshold_helpers_reject_boolean_scores_and_thresholds():
+    import pytest
+
+    with pytest.raises(ValueError, match="score"):
+        evaluate_thresholds([0], [True], [0.5])
+    with pytest.raises(ValueError, match="threshold"):
+        evaluate_thresholds([0], [0.5], [False])
 
