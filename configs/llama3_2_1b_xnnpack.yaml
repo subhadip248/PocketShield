@@ -1,0 +1,24 @@
+base:
+  model_class: llama3_2
+  params: /mnt/d/PocketShield-Models/llama-3.2-1b-instruct/original/params.json
+  checkpoint: /mnt/d/PocketShield-Models/llama-3.2-1b-instruct/original/consolidated.00.pth
+  tokenizer_path: /mnt/d/PocketShield-Models/llama-3.2-1b-instruct/original/tokenizer.model
+  metadata: '{"get_bos_id":128000, "get_eos_ids":[128009, 128001]}'
+
+model:
+  use_sdpa_with_kv_cache: true
+  use_kv_cache: true
+  dtype_override: fp32
+
+export:
+  output_dir: outputs/llama3_2_1b
+
+quantization:
+  qmode: 8da4w
+  group_size: 128
+  embedding_quantize: null 
+
+backend:
+  xnnpack:
+    enabled: true
+    extended_ops: true
