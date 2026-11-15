@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 
 data/
+
+# ExecuTorch environment and generated models
+.venv-executorch/
+llama3.pte
+outputs/
+models/llama-3.2-1b-instruct/
+configs/*.yaml.save
